@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import re
 from typing import Any
@@ -163,6 +164,10 @@ class SteamClient:
         if soup is None:
             return []
 
+        by_carousel = self._extract_similar_appids_from_carousel(soup=soup, appid=appid, limit=limit)
+        if by_carousel:
+            return by_carousel
+
         roots = []
         for selector in ["#recommended_block", ".similar_grid_ctn", ".recommendation_carousel_items"]:
             roots.extend(soup.select(selector))
@@ -185,6 +190,36 @@ class SteamClient:
                     output.append(candidate)
                     if len(output) >= limit:
                         return output
+        return output
+
+    def _extract_similar_appids_from_carousel(self, soup: BeautifulSoup, appid: int, limit: int) -> list[int]:
+        output: list[int] = []
+        seen: set[int] = set()
+        for node in soup.select("[data-featuretarget='storeitems-carousel']"):
+            raw_props = node.get("data-props")
+            if not raw_props:
+                continue
+            try:
+                props = json.loads(raw_props)
+            except Exception:
+                continue
+
+            title = str(props.get("title") or "")
+            see_all = str(props.get("seeAllLink") or "")
+            if ("类似产品" not in title and "More Like This" not in title) and "/recommended/morelike/" not in see_all:
+                continue
+
+            for value in props.get("appIDs") or []:
+                try:
+                    candidate = int(value)
+                except Exception:
+                    continue
+                if candidate == appid or candidate in seen:
+                    continue
+                seen.add(candidate)
+                output.append(candidate)
+                if len(output) >= limit:
+                    return output
         return output
 
     @staticmethod

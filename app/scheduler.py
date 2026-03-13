@@ -47,6 +47,10 @@ class BotScheduler:
         self.scheduler.shutdown(wait=False)
 
     def push_daily_digest(self) -> None:
+        if self.settings.qq_private_only:
+            logger.info("QQ private-only mode enabled, skip proactive daily push")
+            return
+
         channels = self.settings.target_channel_list()
         groups = self.settings.target_group_list()
         if not channels and not groups:

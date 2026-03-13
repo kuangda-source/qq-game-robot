@@ -18,7 +18,13 @@ logger = logging.getLogger(__name__)
 class LLMReranker:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.client = OpenAI(api_key=settings.openai_api_key) if (settings.openai_api_key and OpenAI) else None
+        if settings.openai_api_key and OpenAI:
+            kwargs = {"api_key": settings.openai_api_key}
+            if settings.openai_base_url:
+                kwargs["base_url"] = settings.openai_base_url
+            self.client = OpenAI(**kwargs)
+        else:
+            self.client = None
 
     def rerank(self, seed: GameSnapshot, candidates: Iterable[CandidateGame], top_k: int = 5) -> list[RecommendationItem]:
         candidates = list(candidates)

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     )
 
     openai_api_key: str | None = None
+    openai_base_url: str | None = None
     openai_model: str = "gpt-4.1-mini"
 
     qq_api_base_url: str = "https://api.sgroup.qq.com"
@@ -37,6 +38,8 @@ class Settings(BaseSettings):
     qq_webhook_secret: str | None = None
     qq_target_channels: str = ""
     qq_target_groups: str = ""
+    qq_private_only: bool = True
+    qq_admin_user_ids: str = ""
     qq_bot_name: str = "机器人"
 
     enable_group_mode: bool = False
@@ -55,6 +58,9 @@ class Settings(BaseSettings):
 
     def target_group_list(self) -> List[str]:
         return [item.strip() for item in self.qq_target_groups.split(",") if item.strip()]
+
+    def admin_user_id_list(self) -> List[str]:
+        return [item.strip() for item in self.qq_admin_user_ids.split(",") if item.strip()]
 
     def xhh_agent_pool(self) -> List[str]:
         return [item.strip() for item in self.xhh_user_agents.split("||") if item.strip()]

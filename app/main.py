@@ -87,12 +87,21 @@ async def qq_events(request: Request) -> JSONResponse:
     if "MESSAGE" not in event.event_type.upper():
         return callback_ack()
 
+    if settings.qq_private_only and event.message.scene != "c2c":
+        return callback_ack()
+
+    admin_ids = set(settings.admin_user_id_list())
+    if settings.qq_private_only and admin_ids:
+        if event.message.user_id not in admin_ids and (event.message.user_openid or "") not in admin_ids:
+            qq_client.send_from_event(event.message, "当前机器人仅对管理员开放私聊使用。")
+            return callback_ack()
+
     content = event.message.content or ""
     should_process = any(
         keyword in event.event_type.upper()
         for keyword in ["AT_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]
     )
-    if not should_process:
+    if not should_process and event.message.scene != "c2c":
         if "@" not in content and "<@" not in content and settings.qq_bot_name not in content:
             return callback_ack()
 

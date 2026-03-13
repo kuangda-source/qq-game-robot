@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -125,6 +126,57 @@ class SteamClient:
 
     def _fetch_store_tags(self, appid: int, region: str = "cn") -> list[str]:
         # Steam Web API does not expose community tags directly; fetch public store page tags as supplement.
+        soup = self._fetch_store_soup(appid=appid, region=region)
+        if soup is None:
+            return []
+        tags = []
+        for node in soup.select("a.app_tag"):
+            value = node.get_text(" ", strip=True)
+            if value:
+                tags.append(value)
+        return self._unique_text(tags)
+
+    def get_similar_appids(self, appid: int, region: str = "cn", limit: int = 30) -> list[int]:
+        soup = self._fetch_store_soup(appid=appid, region=region)
+        if soup is None:
+            return []
+
+        roots = []
+        for selector in ["#recommended_block", ".similar_grid_ctn", ".recommendation_carousel_items"]:
+            roots.extend(soup.select(selector))
+
+        if not roots:
+            root = self._find_similar_section_root(soup)
+            if root is not None:
+                roots = [root]
+            else:
+                return []
+
+        output: list[int] = []
+        seen: set[int] = set()
+        for root in roots:
+            for node in root.select("[data-ds-appid], a[href*='/app/']"):
+                for candidate in self._parse_candidate_appids(node=node):
+                    if candidate == appid or candidate in seen:
+                        continue
+                    seen.add(candidate)
+                    output.append(candidate)
+                    if len(output) >= limit:
+                        return output
+        return output
+
+    @staticmethod
+    def _find_similar_section_root(soup: BeautifulSoup):  # noqa: ANN205
+        marker_texts = {"更多类似产品", "更多相似产品", "More Like This"}
+        for node in soup.find_all(["h2", "div", "span"]):
+            text = node.get_text(" ", strip=True)
+            if text in marker_texts:
+                parent = node.find_parent("div")
+                if parent is not None:
+                    return parent
+        return None
+
+    def _fetch_store_soup(self, appid: int, region: str = "cn") -> BeautifulSoup | None:
         url = f"{self.settings.steam_base_url}/app/{appid}"
         params = {"cc": region, "l": self.settings.steam_lang}
         cookies = {
@@ -135,16 +187,30 @@ class SteamClient:
         try:
             resp = self.client.get(url, params=params, cookies=cookies, follow_redirects=True)
             if resp.status_code >= 400:
-                return []
-            soup = BeautifulSoup(resp.text, "html.parser")
-            tags = []
-            for node in soup.select("a.app_tag"):
-                value = node.get_text(" ", strip=True)
-                if value:
-                    tags.append(value)
-            return self._unique_text(tags)
+                return None
+            return BeautifulSoup(resp.text, "html.parser")
         except Exception:  # noqa: BLE001
-            return []
+            return None
+
+    @staticmethod
+    def _parse_candidate_appids(node) -> list[int]:  # noqa: ANN001
+        output: list[int] = []
+        raw = node.get("data-ds-appid")
+        if raw:
+            for value in re.findall(r"\d+", str(raw)):
+                try:
+                    output.append(int(value))
+                except ValueError:
+                    continue
+
+        href = node.get("href") or ""
+        match = re.search(r"/app/(\d+)", href)
+        if match:
+            try:
+                output.append(int(match.group(1)))
+            except ValueError:
+                pass
+        return output
 
     @staticmethod
     def _unique_text(values: list[str]) -> list[str]:

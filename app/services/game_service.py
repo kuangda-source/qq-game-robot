@@ -94,7 +94,11 @@ class GameService:
 
     def _refresh_single_app(self, appid: int, popularity_rank: int | None = None, preload: dict | None = None) -> None:
         details = self.steam_client.get_app_details(appid=appid, region=self.settings.steam_cc)
-        reviews = self.steam_client.get_review_summary(appid=appid)
+        try:
+            reviews = self.steam_client.get_review_summary(appid=appid)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Steam review degrade for app %s: %s", appid, exc)
+            reviews = {}
 
         currency = preload.get("currency") if preload else details.get("currency")
         final_price = (preload or {}).get("final_price") or details.get("final_price")
@@ -179,6 +183,11 @@ class GameService:
             with self.session_factory() as session:
                 repo = GameRepository(session)
                 items = repo.list_hot_discounts(limit=limit)
+        if len(items) < limit:
+            self.refresh_market_data(limit=max(limit * 6, 80), region=region, currency=currency)
+            with self.session_factory() as session:
+                repo = GameRepository(session)
+                items = repo.list_hot_discounts(limit=limit)
 
         self.cache.set_json(
             cache_key,
@@ -258,9 +267,25 @@ class GameService:
             raise DataSourceUnavailable(seed_result.message or "seed game unavailable")
 
         seed = seed_result.game
+        similar_appids = self.steam_client.get_similar_appids(appid=seed.appid, region=self.settings.steam_cc, limit=40)
+        similar_appid_set = set(similar_appids)
+        prioritized: dict[int, GameSnapshot] = {}
+        for appid in similar_appids:
+            snapshot = self._get_snapshot_or_refresh(appid)
+            if not snapshot:
+                continue
+            if (snapshot.steam_price.discount_percent or 0) <= 0:
+                continue
+            prioritized[snapshot.appid] = snapshot
+
         with self.session_factory() as session:
             repo = GameRepository(session)
             raw_candidates = repo.list_discounted_candidates(exclude_appid=seed.appid, max_count=120)
+        for item in raw_candidates:
+            if item.appid == seed.appid:
+                continue
+            if item.appid not in prioritized:
+                prioritized[item.appid] = item
 
         filtered = []
         seed_genres = self._normalize_terms(seed.genres)
@@ -269,14 +294,18 @@ class GameService:
         seed_is_shooter = self._is_shooter(seed.name, seed_genres, seed_tags)
         seed_prefers_single = self._prefers_single_player(seed_tags)
         min_overlap = self._required_genre_overlap(seed_genres)
-        for item in raw_candidates:
-            if (item.steam_review.overall_percent or 0) < self.settings.min_recommend_review_percent:
+        for item in prioritized.values():
+            review_percent = item.steam_review.overall_percent
+            is_prioritized = item.appid in similar_appid_set
+            if review_percent is not None and review_percent < self.settings.min_recommend_review_percent and not is_prioritized:
+                continue
+            if review_percent is None and not is_prioritized:
                 continue
             cand_genres = self._normalize_terms(item.genres)
             cand_tags = self._strip_non_gameplay_tags(self._normalize_terms(item.tags))
             overlap = seed_genres.intersection(cand_genres)
             overlap_count = len(overlap)
-            if overlap_count < min_overlap:
+            if overlap_count < min_overlap and not is_prioritized:
                 continue
 
             genre_score = (overlap_count / len(seed_genres)) if seed_genres else 0
@@ -287,11 +316,11 @@ class GameService:
             concept_score = (concept_overlap / len(seed_concepts)) if seed_concepts else 0
 
             # If seed has a clear gameplay concept (e.g. soulslike), reject concept-mismatch candidates.
-            if seed_concepts and concept_overlap == 0:
+            if seed_concepts and concept_overlap == 0 and not is_prioritized:
                 continue
 
             discount_score = min(1.0, (item.steam_price.discount_percent or 0) / 80)
-            review_score = ((item.steam_review.overall_percent or 0) / 100) * 0.6
+            review_score = ((review_percent or 0) / 100) * 0.6
             if seed_concepts:
                 score = (
                     concept_score * 0.40
@@ -310,8 +339,10 @@ class GameService:
                 score -= 0.20
             if "soulslike" in seed_concepts and "soulslike" not in cand_concepts:
                 score -= 0.20
+            if is_prioritized:
+                score += 0.18
 
-            if score < 0.22:
+            if score < 0.22 and not is_prioritized:
                 continue
 
             filtered.append(

@@ -85,6 +85,11 @@ class FakeSteamClient:
             return [{"appid": 200, "name": "卧龙"}]
         return []
 
+    def get_similar_appids(self, appid: int, region: str = "cn", limit: int = 30):
+        if appid == 100:
+            return [200]
+        return []
+
 
 class FakeXHHSpider:
     def fetch_game_snapshot(self, appid: int, steam_name: str | None = None):

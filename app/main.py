@@ -82,17 +82,34 @@ async def qq_events(request: Request) -> JSONResponse:
 
     event = normalize_event(payload)
     if event is None:
+        logger.info("QQ event ignored: normalize_event returned None, t=%s", payload.get("t") or payload.get("event_type"))
         return callback_ack()
 
     if "MESSAGE" not in event.event_type.upper():
+        logger.info("QQ event ignored: non-message event t=%s", event.event_type)
         return callback_ack()
 
+    logger.info(
+        "QQ message event: t=%s scene=%s user_id=%s user_openid=%s",
+        event.event_type,
+        event.message.scene,
+        event.message.user_id,
+        event.message.user_openid,
+    )
+
     if settings.qq_private_only and event.message.scene != "c2c":
+        logger.info("QQ event ignored: private-only mode blocks non-c2c scene=%s", event.message.scene)
         return callback_ack()
 
     admin_ids = set(settings.admin_user_id_list())
     if settings.qq_private_only and admin_ids:
         if event.message.user_id not in admin_ids and (event.message.user_openid or "") not in admin_ids:
+            logger.info(
+                "QQ event blocked by admin whitelist: user_id=%s user_openid=%s allowed=%s",
+                event.message.user_id,
+                event.message.user_openid,
+                ",".join(sorted(admin_ids)),
+            )
             qq_client.send_from_event(event.message, "当前机器人仅对管理员开放私聊使用。")
             return callback_ack()
 
@@ -165,6 +182,7 @@ def _build_signing_key(secret: str) -> SigningKey:
 
 def normalize_event(payload: dict[str, Any]) -> QQEvent | None:
     event_type = payload.get("t") or payload.get("event_type") or ""
+    event_upper = event_type.upper()
     data = payload.get("d") or payload.get("message") or {}
     event_id = payload.get("id")
 
@@ -188,12 +206,21 @@ def normalize_event(payload: dict[str, Any]) -> QQEvent | None:
     channel_id = data.get("channel_id")
 
     scene = "channel"
-    session_id = f"{channel_id}:{user_id}" if channel_id else str(user_id)
-    if group_openid:
-        scene = "group"
-        session_id = f"{group_openid}:{user_id}"
-    elif user_openid and not channel_id:
+    if "C2C" in event_upper:
         scene = "c2c"
+    elif "GROUP" in event_upper or group_openid:
+        scene = "group"
+    elif channel_id:
+        scene = "channel"
+
+    if scene == "c2c" and not user_openid:
+        # Some private-message callbacks only carry author.id.
+        user_openid = str(author.get("id") or data.get("user_id") or user_id)
+
+    session_id = f"{channel_id}:{user_id}" if channel_id else str(user_id)
+    if scene == "group":
+        session_id = f"{group_openid or data.get('group_id')}:{user_id}"
+    elif scene == "c2c":
         session_id = f"{user_openid}:{user_id}"
 
     message = QQEventMessage(

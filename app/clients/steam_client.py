@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import re
 from typing import Any
 
@@ -18,7 +19,7 @@ class SteamClient:
     def get_top_seller_discounts(self, limit: int, region: str = "cn", currency: str = "CNY") -> list[dict[str, Any]]:
         url = f"{self.settings.steam_base_url}/api/featuredcategories"
         params = {"cc": region, "l": self.settings.steam_lang}
-        resp = self.client.get(url, params=params)
+        resp = self._get_with_retry(url=url, params=params)
         if resp.status_code >= 400:
             raise DataSourceUnavailable(f"Steam top_sellers request failed: {resp.status_code}")
 
@@ -53,7 +54,7 @@ class SteamClient:
             "l": self.settings.steam_lang,
             "cc": region,
         }
-        resp = self.client.get(url, params=params)
+        resp = self._get_with_retry(url=url, params=params)
         if resp.status_code >= 400:
             raise DataSourceUnavailable(f"Steam store search failed: {resp.status_code}")
 
@@ -71,7 +72,7 @@ class SteamClient:
     def get_app_details(self, appid: int, region: str = "cn") -> dict[str, Any]:
         url = f"{self.settings.steam_base_url}/api/appdetails"
         params = {"appids": appid, "cc": region, "l": self.settings.steam_lang}
-        resp = self.client.get(url, params=params)
+        resp = self._get_with_retry(url=url, params=params)
         if resp.status_code >= 400:
             raise DataSourceUnavailable(f"Steam app details failed: {resp.status_code}")
 
@@ -117,7 +118,7 @@ class SteamClient:
             "filter": review_filter,
             "num_per_page": 0,
         }
-        resp = self.client.get(url, params=params)
+        resp = self._get_with_retry(url=url, params=params)
         if resp.status_code >= 400:
             raise DataSourceUnavailable(f"Steam reviews failed: {resp.status_code}")
 
@@ -185,12 +186,24 @@ class SteamClient:
             "wants_mature_content": "1",
         }
         try:
-            resp = self.client.get(url, params=params, cookies=cookies, follow_redirects=True)
+            resp = self._get_with_retry(url=url, params=params, cookies=cookies, follow_redirects=True)
             if resp.status_code >= 400:
                 return None
             return BeautifulSoup(resp.text, "html.parser")
         except Exception:  # noqa: BLE001
             return None
+
+    def _get_with_retry(self, url: str, **kwargs) -> httpx.Response:
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                return self.client.get(url, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < 2:
+                    time.sleep(0.4 * (attempt + 1))
+                continue
+        raise DataSourceUnavailable(f"Steam request failed after retries: {last_exc}")
 
     @staticmethod
     def _parse_candidate_appids(node) -> list[int]:  # noqa: ANN001

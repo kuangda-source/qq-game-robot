@@ -81,7 +81,11 @@ class GameService:
 
     def refresh_market_data(self, limit: int | None = None, region: str = "cn", currency: str = "CNY") -> int:
         limit = limit or self.settings.refresh_batch_size
-        items = self.steam_client.get_top_seller_discounts(limit=limit, region=region, currency=currency)
+        try:
+            items = self.steam_client.get_top_seller_discounts(limit=limit, region=region, currency=currency)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Refresh market list failed: %s", exc)
+            return 0
         updated = 0
         for item in items:
             appid = item["appid"]
@@ -198,12 +202,18 @@ class GameService:
             items = repo.list_hot_discounts(limit=limit)
 
         if len(items) < max(3, limit // 2):
-            self.refresh_market_data(limit=max(limit * 3, 30), region=region, currency=currency)
+            try:
+                self.refresh_market_data(limit=max(limit * 3, 30), region=region, currency=currency)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Daily hot refresh attempt #1 failed: %s", exc)
             with self.session_factory() as session:
                 repo = GameRepository(session)
                 items = repo.list_hot_discounts(limit=limit)
         if len(items) < limit:
-            self.refresh_market_data(limit=max(limit * 6, 80), region=region, currency=currency)
+            try:
+                self.refresh_market_data(limit=max(limit * 6, 80), region=region, currency=currency)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Daily hot refresh attempt #2 failed: %s", exc)
             with self.session_factory() as session:
                 repo = GameRepository(session)
                 items = repo.list_hot_discounts(limit=limit)

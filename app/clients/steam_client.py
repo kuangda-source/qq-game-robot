@@ -24,24 +24,45 @@ class SteamClient:
             raise DataSourceUnavailable(f"Steam top_sellers request failed: {resp.status_code}")
 
         payload = resp.json()
-        items = (payload.get("top_sellers") or {}).get("items", [])
-        output = []
-        for index, item in enumerate(items[:limit], start=1):
-            discount = int(item.get("discount_percent") or 0)
-            if discount <= 0:
-                continue
-            output.append(
-                {
-                    "appid": int(item.get("id")),
-                    "name": item.get("name") or "",
-                    "original_price": item.get("original_price"),
-                    "final_price": item.get("final_price"),
-                    "currency": currency,
-                    "discount_percent": discount,
-                    "popularity_rank": index,
-                }
-            )
-        return output
+        top_items = (payload.get("top_sellers") or {}).get("items", [])
+        specials = (payload.get("specials") or {}).get("items", [])
+
+        output: list[dict[str, Any]] = []
+        seen: set[int] = set()
+
+        def append_items(items: list[dict[str, Any]], base_rank: int) -> int:
+            rank = base_rank
+            for item in items:
+                appid_raw = item.get("id")
+                if appid_raw is None:
+                    continue
+                appid = int(appid_raw)
+                if appid in seen:
+                    continue
+                discount = int(item.get("discount_percent") or 0)
+                if discount <= 0:
+                    continue
+                seen.add(appid)
+                output.append(
+                    {
+                        "appid": appid,
+                        "name": item.get("name") or "",
+                        "original_price": item.get("original_price"),
+                        "final_price": item.get("final_price"),
+                        "currency": currency,
+                        "discount_percent": discount,
+                        "popularity_rank": rank,
+                    }
+                )
+                rank += 1
+                if len(output) >= limit:
+                    break
+            return rank
+
+        rank_cursor = append_items(top_items, 1)
+        if len(output) < limit:
+            append_items(specials, rank_cursor)
+        return output[:limit]
 
     def search_apps(self, keyword: str, limit: int = 5, region: str = "cn") -> list[dict[str, Any]]:
         query = keyword.strip()

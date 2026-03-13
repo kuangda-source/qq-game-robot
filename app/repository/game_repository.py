@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable
@@ -151,15 +152,34 @@ class GameRepository:
         for row in name_rows + alias_rows:
             merged[row.appid] = row
 
+        if not merged:
+            normalized_q = self._normalize_name_for_match(q)
+            if normalized_q:
+                rows = self.session.execute(select(models.Game).limit(limit * 200)).scalars().all()
+                for row in rows:
+                    normalized_name = self._normalize_name_for_match(row.name)
+                    if not normalized_name:
+                        continue
+                    if normalized_q in normalized_name or normalized_name in normalized_q:
+                        merged[row.appid] = row
+
         ranked = sorted(
             merged.values(),
             key=lambda row: (
                 0 if row.name.lower() == q.lower() else 1,
                 0 if row.name.lower().startswith(q.lower()) else 1,
+                0 if self._normalize_name_for_match(row.name) == self._normalize_name_for_match(q) else 1,
                 len(row.name),
             ),
         )
         return [GameCandidate(appid=row.appid, name=row.name) for row in ranked[:limit]]
+
+    @staticmethod
+    def _normalize_name_for_match(value: str | None) -> str:
+        if not value:
+            return ""
+        lowered = value.strip().lower()
+        return re.sub(r"[\W_]+", "", lowered, flags=re.UNICODE)
 
     def _latest_price(self, appid: int, source: str) -> models.PriceSnapshot | None:
         return self.session.execute(

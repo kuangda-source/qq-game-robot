@@ -19,10 +19,17 @@ class XiaoHeiHeSpider:
 
     def fetch_game_snapshot(self, appid: int, steam_name: str | None = None) -> dict[str, Any]:
         url = self.settings.xhh_game_url_template.format(appid=appid)
-        headers = {"User-Agent": random.choice(self._agents)}
-        resp = self.client.get(url, headers=headers)
+        headers = {
+            "User-Agent": random.choice(self._agents),
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": "https://www.xiaoheihe.cn/",
+        }
+        resp = self.client.get(url, headers=headers, follow_redirects=True)
         if resp.status_code >= 400:
             raise DataSourceUnavailable(f"XHH request failed: {resp.status_code}")
+        final_url = str(getattr(resp, "url", url))
+        if "/app/bbs/home" in final_url:
+            raise DataSourceUnavailable("XHH redirected to home page (likely anti-bot/unauthenticated)")
 
         soup = BeautifulSoup(resp.text, "html.parser")
         full_text = soup.get_text(" ", strip=True)

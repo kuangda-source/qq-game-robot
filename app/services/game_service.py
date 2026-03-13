@@ -482,11 +482,23 @@ class GameService:
             return repo.get_game_snapshot(appid)
 
     def _seed_from_store_search(self, keyword: str, max_count: int = 3) -> int:
-        try:
-            rows = self.steam_client.search_apps(keyword=keyword, limit=max_count, region=self.settings.steam_cc)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("Steam store search fallback failed for '%s': %s", keyword, exc)
-            return 0
+        queries = self._build_store_search_queries(keyword)
+        rows: list[dict] = []
+        seen: set[int] = set()
+        for query in queries:
+            try:
+                batch = self.steam_client.search_apps(keyword=query, limit=max_count, region=self.settings.steam_cc)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Steam store search fallback failed for '%s': %s", query, exc)
+                continue
+            for item in batch:
+                appid = int(item["appid"])
+                if appid in seen:
+                    continue
+                seen.add(appid)
+                rows.append(item)
+            if len(rows) >= max_count:
+                break
 
         updated = 0
         for item in rows:
@@ -497,3 +509,22 @@ class GameService:
             except Exception as exc:  # noqa: BLE001
                 logger.info("Seed app refresh failed for %s: %s", appid, exc)
         return updated
+
+    @staticmethod
+    def _build_store_search_queries(keyword: str) -> list[str]:
+        base = keyword.strip()
+        if not base:
+            return []
+
+        normalized = re.sub(r"[\W_]+", "", base, flags=re.UNICODE)
+        queries: list[str] = []
+        for item in [base, normalized]:
+            if item and item not in queries:
+                queries.append(item)
+
+        if normalized and len(normalized) >= 4:
+            prefix_len = 3 if len(normalized) >= 5 else 2
+            prefix = normalized[:prefix_len]
+            if prefix and prefix not in queries:
+                queries.append(prefix)
+        return queries

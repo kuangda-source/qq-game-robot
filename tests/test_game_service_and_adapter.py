@@ -233,6 +233,19 @@ def test_query_uses_store_search_fallback(settings: Settings, memory_cache, sess
         assert result.candidates
 
 
+def test_query_matches_without_punctuation(settings: Settings, memory_cache, session_factory):
+    service = build_service(settings, memory_cache, session_factory)
+    service.refresh_market_data(limit=10)
+    result = service.query_game_snapshot("黑神话悟空")
+    assert result.status in {"ok", "ambiguous"}
+    if result.status == "ok":
+        assert result.game is not None
+        assert result.game.appid == 100
+    else:
+        assert result.candidates
+        assert result.candidates[0]["appid"] == 100
+
+
 def test_refresh_degrades_to_preload_when_details_fail(settings: Settings, memory_cache, session_factory):
     service = GameService(
         settings=settings,

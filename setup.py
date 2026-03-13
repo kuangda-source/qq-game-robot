@@ -18,6 +18,7 @@ setup(
         "apscheduler>=3.10.4",
         "openai>=1.51.0",
         "beautifulsoup4>=4.12.0",
+        "pynacl>=1.5.0",
         "eval_type_backport>=0.3.1; python_version < '3.10'",
     ],
     extras_require={

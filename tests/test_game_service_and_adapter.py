@@ -95,7 +95,7 @@ class DummyQQClient(QQApiClient):
     def __init__(self, settings):
         self.settings = settings
 
-    def send_message(self, channel_id: str, content: str) -> bool:
+    def send_message(self, scene: str, target_id: str, content: str, msg_id=None, event_id=None, msg_seq=1) -> bool:
         return True
 
 

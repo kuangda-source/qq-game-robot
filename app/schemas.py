@@ -74,10 +74,15 @@ class QueryResult(BaseModel):
 
 class QQEventMessage(BaseModel):
     content: str
-    channel_id: str
+    channel_id: str | None = None
     guild_id: str | None = None
     group_id: str | None = None
+    group_openid: str | None = None
+    user_openid: str | None = None
     user_id: str
+    message_id: str | None = None
+    event_id: str | None = None
+    scene: Literal["group", "channel", "c2c"] = "channel"
     session_id: str
 
 

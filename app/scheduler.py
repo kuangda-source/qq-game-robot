@@ -48,11 +48,19 @@ class BotScheduler:
 
     def push_daily_digest(self) -> None:
         channels = self.settings.target_channel_list()
-        if not channels:
-            logger.info("No QQ target channels configured, skip daily push")
+        groups = self.settings.target_group_list()
+        if not channels and not groups:
+            logger.info("No QQ target channels/groups configured, skip daily push")
             return
 
         for channel_id in channels:
-            ok = self.adapter.on_daily_push(channel_id)
+            ok = self.adapter.on_daily_push(target_id=channel_id, scene="channel")
             if not ok:
                 logger.warning("Daily push failed for channel %s", channel_id)
+
+        if groups:
+            logger.warning("Group proactive message quota is strict on QQ. Daily push may be limited by platform policy.")
+        for group_openid in groups:
+            ok = self.adapter.on_daily_push(target_id=group_openid, scene="group")
+            if not ok:
+                logger.warning("Daily push failed for group %s", group_openid)

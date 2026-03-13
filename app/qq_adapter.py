@@ -86,10 +86,10 @@ class QQAdapter:
         self._log(event=event, response=response)
         return response
 
-    def on_daily_push(self, channel_id: str) -> bool:
+    def on_daily_push(self, target_id: str, scene: str = "channel") -> bool:
         items = self.service.get_daily_hot_discounts(limit=self.settings.hot_default_limit)
         message = self._format_daily_discounts(items)
-        return self.qq_client.send_message(channel_id=channel_id, content=message)
+        return self.qq_client.send_message(scene=scene, target_id=target_id, content=message, msg_id="MESSAGE_CREATE")
 
     def _render_query_result(self, event: QQEventMessage, result) -> str:
         if result.status == "not_found":

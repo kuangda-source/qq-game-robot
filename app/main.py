@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
+import json
 import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from nacl.encoding import HexEncoder
+from nacl.exceptions import BadSignatureError
+from nacl.signing import SigningKey
 
 from app.cache import MemoryCache, RedisCache
 from app.clients.qq_api import QQApiClient
@@ -71,58 +73,131 @@ def health() -> dict[str, str]:
 @app.post("/qq/events")
 async def qq_events(request: Request) -> JSONResponse:
     body = await request.body()
+    payload = json.loads(body.decode("utf-8") or "{}") if body else {}
+
+    if payload.get("op") == 13:
+        return callback_validation(payload)
+
     verify_signature(request=request, body=body)
 
-    payload = await request.json()
     event = normalize_event(payload)
     if event is None:
-        return JSONResponse({"ok": True, "ignored": True})
+        return callback_ack()
 
     if "MESSAGE" not in event.event_type.upper():
-        return JSONResponse({"ok": True, "ignored": True})
+        return callback_ack()
 
     content = event.message.content or ""
-    if "@" not in content and "<@" not in content and settings.qq_bot_name not in content:
-        return JSONResponse({"ok": True, "ignored": True})
+    should_process = any(
+        keyword in event.event_type.upper()
+        for keyword in ["AT_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"]
+    )
+    if not should_process:
+        if "@" not in content and "<@" not in content and settings.qq_bot_name not in content:
+            return callback_ack()
 
     response = adapter.on_mention_query(event.message)
-    sent = qq_client.send_message(channel_id=event.message.channel_id, content=response)
-    return JSONResponse({"ok": True, "sent": sent, "preview": response[:120]})
+    qq_client.send_from_event(event.message, response)
+    return callback_ack()
+
+
+def callback_ack() -> JSONResponse:
+    # QQ callback mode expects op=12 ack.
+    return JSONResponse({"op": 12, "d": 0})
+
+
+def callback_validation(payload: dict[str, Any]) -> JSONResponse:
+    secret = settings.qq_bot_secret or settings.qq_webhook_secret
+    if not secret:
+        raise HTTPException(status_code=500, detail="qq_bot_secret is required for callback validation")
+
+    data = payload.get("d") or {}
+    plain_token = data.get("plain_token")
+    event_ts = data.get("event_ts")
+    if not plain_token or not event_ts:
+        raise HTTPException(status_code=400, detail="invalid callback validation payload")
+
+    signing_key = _build_signing_key(secret)
+    signature = signing_key.sign(f"{event_ts}{plain_token}".encode("utf-8")).signature.hex()
+    return JSONResponse({"plain_token": plain_token, "signature": signature})
 
 
 def verify_signature(request: Request, body: bytes) -> None:
-    if not settings.qq_webhook_secret:
+    secret = settings.qq_bot_secret or settings.qq_webhook_secret
+    if not secret:
         return
 
-    signature = request.headers.get("X-Signature") or request.headers.get("X-QQ-Signature")
-    if not signature:
-        raise HTTPException(status_code=401, detail="signature missing")
+    signature = request.headers.get("X-Signature-Ed25519")
+    timestamp = request.headers.get("X-Signature-Timestamp")
+    if not signature or not timestamp:
+        raise HTTPException(status_code=401, detail="signature headers missing")
 
-    digest = hmac.new(settings.qq_webhook_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(digest, signature):
-        raise HTTPException(status_code=401, detail="signature invalid")
+    signing_key = _build_signing_key(secret)
+    verify_key = signing_key.verify_key
+    try:
+        verify_key.verify(timestamp.encode("utf-8") + body, bytes.fromhex(signature))
+    except (BadSignatureError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="signature invalid") from exc
+
+
+def _build_signing_key(secret: str) -> SigningKey:
+    # Tencent docs show HexEncoder style. Some control panels expose non-hex secret,
+    # so we keep a raw-seed fallback for compatibility.
+    try:
+        return SigningKey(secret.encode("utf-8"), encoder=HexEncoder)
+    except Exception:  # noqa: BLE001
+        raw = secret.encode("utf-8")
+        if len(raw) < 32:
+            raw = raw.ljust(32, b"0")
+        elif len(raw) > 32:
+            raw = raw[:32]
+        return SigningKey(raw)
 
 
 def normalize_event(payload: dict[str, Any]) -> QQEvent | None:
-    event_type = payload.get("event_type") or payload.get("t") or ""
-    data = payload.get("message") or payload.get("d") or {}
+    event_type = payload.get("t") or payload.get("event_type") or ""
+    data = payload.get("d") or payload.get("message") or {}
+    event_id = payload.get("id")
 
     if not isinstance(data, dict):
         return None
 
     content = data.get("content") or ""
-    channel_id = data.get("channel_id") or data.get("group_id") or data.get("guild_id")
-    user_id = (data.get("author") or {}).get("id") or data.get("user_id")
-
-    if not channel_id or not user_id:
+    author = data.get("author") or {}
+    user_id = (
+        author.get("id")
+        or author.get("member_openid")
+        or author.get("user_openid")
+        or data.get("user_id")
+        or data.get("openid")
+    )
+    if not user_id:
         return None
+
+    group_openid = data.get("group_openid")
+    user_openid = author.get("user_openid") or data.get("user_openid") or data.get("openid")
+    channel_id = data.get("channel_id")
+
+    scene = "channel"
+    session_id = f"{channel_id}:{user_id}" if channel_id else str(user_id)
+    if group_openid:
+        scene = "group"
+        session_id = f"{group_openid}:{user_id}"
+    elif user_openid and not channel_id:
+        scene = "c2c"
+        session_id = f"{user_openid}:{user_id}"
 
     message = QQEventMessage(
         content=content,
-        channel_id=str(channel_id),
+        channel_id=str(channel_id) if channel_id else None,
         guild_id=str(data.get("guild_id")) if data.get("guild_id") else None,
         group_id=str(data.get("group_id")) if data.get("group_id") else None,
+        group_openid=str(group_openid) if group_openid else None,
+        user_openid=str(user_openid) if user_openid else None,
         user_id=str(user_id),
-        session_id=str(data.get("session_id") or f"{channel_id}:{user_id}"),
+        message_id=str(data.get("id")) if data.get("id") else None,
+        event_id=str(event_id) if event_id else None,
+        scene=scene,
+        session_id=str(session_id),
     )
     return QQEvent(event_type=event_type, message=message)

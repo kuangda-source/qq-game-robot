@@ -93,7 +93,7 @@ class GameService:
         return updated
 
     def _refresh_single_app(self, appid: int, popularity_rank: int | None = None, preload: dict | None = None) -> None:
-        details = self.steam_client.get_app_details(appid=appid, region=self.settings.steam_cc)
+        details = self._load_details_with_degrade(appid=appid, preload=preload)
         try:
             reviews = self.steam_client.get_review_summary(appid=appid)
         except Exception as exc:  # noqa: BLE001
@@ -167,6 +167,25 @@ class GameService:
                 steam_overall_percent=reviews.get("overall_percent"),
                 xhh_overall_percent=xhh_data.get("overall_percent") if xhh_data else None,
             )
+
+    def _load_details_with_degrade(self, appid: int, preload: dict | None = None) -> dict:
+        try:
+            return self.steam_client.get_app_details(appid=appid, region=self.settings.steam_cc)
+        except Exception as exc:  # noqa: BLE001
+            if preload:
+                logger.info("Steam app details degrade for app %s, fallback to preload: %s", appid, exc)
+                return {
+                    "appid": appid,
+                    "name": preload.get("name") or str(appid),
+                    "genres": [],
+                    "tags": [],
+                    "currency": preload.get("currency") or "CNY",
+                    "original_price": preload.get("original_price"),
+                    "final_price": preload.get("final_price"),
+                    "discount_percent": int(preload.get("discount_percent") or 0),
+                    "aliases": [preload.get("name") or ""],
+                }
+            raise
 
     def get_daily_hot_discounts(self, limit: int, region: str = "cn", currency: str = "CNY") -> list[DailyDiscountItem]:
         cache_key = f"daily_hot:{region}:{currency}:{limit}"

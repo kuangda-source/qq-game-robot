@@ -91,6 +91,11 @@ class FakeSteamClient:
         return []
 
 
+class FailingDetailsSteamClient(FakeSteamClient):
+    def get_app_details(self, appid: int, region: str = "cn"):
+        raise DataSourceUnavailable("timeout")
+
+
 class FakeXHHSpider:
     def fetch_game_snapshot(self, appid: int, steam_name: str | None = None):
         if appid == 101:
@@ -226,3 +231,21 @@ def test_query_uses_store_search_fallback(settings: Settings, memory_cache, sess
         assert "黑神话" in result.game.name
     else:
         assert result.candidates
+
+
+def test_refresh_degrades_to_preload_when_details_fail(settings: Settings, memory_cache, session_factory):
+    service = GameService(
+        settings=settings,
+        cache=memory_cache,
+        steam_client=FailingDetailsSteamClient(),
+        xhh_spider=FakeXHHSpider(),
+        reranker=FakeReranker(),
+        session_factory=session_factory,
+    )
+    updated = service.refresh_market_data(limit=3)
+    assert updated >= 3
+
+    result = service.query_game_snapshot("黑神话：悟空")
+    assert result.status == "ok"
+    assert result.game is not None
+    assert result.game.steam_price.final_price == 23840

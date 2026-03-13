@@ -162,6 +162,9 @@ class GameService:
         if not candidates:
             self.refresh_market_data(limit=40)
             candidates = self.resolve_ambiguous_name(keyword)
+        if not candidates:
+            self._seed_from_store_search(keyword, max_count=3)
+            candidates = self.resolve_ambiguous_name(keyword)
 
         if not candidates:
             return QueryResult(status="not_found", message="未找到匹配游戏")
@@ -192,6 +195,9 @@ class GameService:
     def recommend_similar_discounted(self, seed_game: str | int, top_k: int = 5) -> list[dict]:
         query = str(seed_game)
         seed_result = self.query_game_snapshot(query)
+        if seed_result.status != "ok" or not seed_result.game:
+            self._seed_from_store_search(query, max_count=3)
+            seed_result = self.query_game_snapshot(query)
         if seed_result.status != "ok" or not seed_result.game:
             raise DataSourceUnavailable(seed_result.message or "seed game unavailable")
 
@@ -253,3 +259,20 @@ class GameService:
         with self.session_factory() as session:
             repo = GameRepository(session)
             return repo.get_game_snapshot(appid)
+
+    def _seed_from_store_search(self, keyword: str, max_count: int = 3) -> int:
+        try:
+            rows = self.steam_client.search_apps(keyword=keyword, limit=max_count, region=self.settings.steam_cc)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Steam store search fallback failed for '%s': %s", keyword, exc)
+            return 0
+
+        updated = 0
+        for item in rows:
+            appid = int(item["appid"])
+            try:
+                self._refresh_single_app(appid=appid)
+                updated += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Seed app refresh failed for %s: %s", appid, exc)
+        return updated

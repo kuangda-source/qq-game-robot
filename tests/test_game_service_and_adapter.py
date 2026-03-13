@@ -56,6 +56,13 @@ class FakeSteamClient:
         }
         return mapping[appid]
 
+    def search_apps(self, keyword: str, limit: int = 5, region: str = "cn"):
+        if "黑神话" in keyword:
+            return [{"appid": 100, "name": "黑神话：悟空"}]
+        if "卧龙" in keyword:
+            return [{"appid": 200, "name": "卧龙"}]
+        return []
+
 
 class FakeXHHSpider:
     def fetch_game_snapshot(self, appid: int, steam_name: str | None = None):
@@ -170,3 +177,14 @@ def test_xhh_degrade_message(settings: Settings, memory_cache, session_factory):
     )
     text = adapter.on_mention_query(event)
     assert "自动降级" in text
+
+
+def test_query_uses_store_search_fallback(settings: Settings, memory_cache, session_factory):
+    service = build_service(settings, memory_cache, session_factory)
+    result = service.query_game_snapshot("黑神话")
+    assert result.status in {"ok", "ambiguous"}
+    if result.status == "ok":
+        assert result.game is not None
+        assert "黑神话" in result.game.name
+    else:
+        assert result.candidates

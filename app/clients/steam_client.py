@@ -40,6 +40,32 @@ class SteamClient:
             )
         return output
 
+    def search_apps(self, keyword: str, limit: int = 5, region: str = "cn") -> list[dict[str, Any]]:
+        query = keyword.strip()
+        if not query:
+            return []
+
+        url = f"{self.settings.steam_base_url}/api/storesearch"
+        params = {
+            "term": query,
+            "l": self.settings.steam_lang,
+            "cc": region,
+        }
+        resp = self.client.get(url, params=params)
+        if resp.status_code >= 400:
+            raise DataSourceUnavailable(f"Steam store search failed: {resp.status_code}")
+
+        payload = resp.json() or {}
+        items = payload.get("items") or []
+        results: list[dict[str, Any]] = []
+        for item in items[:limit]:
+            appid = item.get("id")
+            name = item.get("name")
+            if not appid or not name:
+                continue
+            results.append({"appid": int(appid), "name": str(name)})
+        return results
+
     def get_app_details(self, appid: int, region: str = "cn") -> dict[str, Any]:
         url = f"{self.settings.steam_base_url}/api/appdetails"
         params = {"appids": appid, "cc": region, "l": self.settings.steam_lang}

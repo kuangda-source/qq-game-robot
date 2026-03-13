@@ -157,6 +157,14 @@ def test_recommend_similar_discounted(settings: Settings, memory_cache, session_
     assert rows[0]["appid"] == 200
 
 
+def test_recommend_similar_with_ambiguous_seed(settings: Settings, memory_cache, session_factory):
+    service = build_service(settings, memory_cache, session_factory)
+    service.refresh_market_data(limit=10)
+    rows = service.recommend_similar_discounted("黑神话", top_k=3)
+    assert rows
+    assert rows[0]["appid"] == 200
+
+
 def test_xhh_degrade_message(settings: Settings, memory_cache, session_factory):
     service = build_service(settings, memory_cache, session_factory)
     service.refresh_market_data(limit=10)

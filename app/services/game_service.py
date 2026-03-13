@@ -195,9 +195,21 @@ class GameService:
     def recommend_similar_discounted(self, seed_game: str | int, top_k: int = 5) -> list[dict]:
         query = str(seed_game)
         seed_result = self.query_game_snapshot(query)
+        if seed_result.status == "ambiguous" and seed_result.candidates:
+            # For recommendation flow, default to top candidate to keep conversation smooth.
+            # Query flow still keeps explicit disambiguation.
+            fallback_appid = int(seed_result.candidates[0]["appid"])
+            snapshot = self._get_snapshot_or_refresh(fallback_appid)
+            if snapshot:
+                seed_result = QueryResult(status="ok", game=snapshot)
         if seed_result.status != "ok" or not seed_result.game:
             self._seed_from_store_search(query, max_count=3)
             seed_result = self.query_game_snapshot(query)
+        if seed_result.status == "ambiguous" and seed_result.candidates:
+            fallback_appid = int(seed_result.candidates[0]["appid"])
+            snapshot = self._get_snapshot_or_refresh(fallback_appid)
+            if snapshot:
+                seed_result = QueryResult(status="ok", game=snapshot)
         if seed_result.status != "ok" or not seed_result.game:
             raise DataSourceUnavailable(seed_result.message or "seed game unavailable")
 

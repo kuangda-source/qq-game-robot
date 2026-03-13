@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Iterable
 
 try:
@@ -55,25 +56,10 @@ class LLMReranker:
                 },
             }
 
-            resp = self.client.responses.create(
-                model=self.settings.openai_model,
-                input=[
-                    {
-                        "role": "system",
-                        "content": "你是游戏推荐重排器。严格输出JSON数组，每项包含appid, reason, score(0-1)。",
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(prompt_payload, ensure_ascii=False),
-                    },
-                ],
-                temperature=0.2,
-            )
-            text = getattr(resp, "output_text", "") or ""
-            if not text.strip():
+            parsed = self._request_rerank_json(prompt_payload=prompt_payload)
+            if not parsed:
                 return fallback
 
-            parsed = json.loads(text)
             by_id = {item.appid: item for item in fallback}
             reranked: list[RecommendationItem] = []
             for row in parsed:
@@ -97,6 +83,63 @@ class LLMReranker:
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM rerank failed, fallback to rule ranking: %s", exc)
             return fallback
+
+    def _request_rerank_json(self, prompt_payload: dict) -> list[dict] | None:
+        system_prompt = "你是游戏推荐重排器。严格输出JSON数组，每项包含appid, reason, score(0-1)。不要输出任何额外文本。"
+        user_prompt = json.dumps(prompt_payload, ensure_ascii=False)
+
+        # First try Responses API. Some OpenAI-compatible providers do not support it.
+        try:
+            resp = self.client.responses.create(
+                model=self.settings.openai_model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+            )
+            text = getattr(resp, "output_text", "") or ""
+            parsed = self._parse_json_array(text)
+            if parsed is not None:
+                return parsed
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Responses API unavailable, trying chat.completions: %s", exc)
+
+        # Fallback for DashScope/OpenAI-compatible chat API.
+        chat = self.client.chat.completions.create(
+            model=self.settings.openai_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+        text = (chat.choices[0].message.content or "") if chat.choices else ""
+        return self._parse_json_array(text)
+
+    @staticmethod
+    def _parse_json_array(text: str) -> list[dict] | None:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        # Handle markdown code fences.
+        fenced = re.search(r"```(?:json)?\s*(\[.*\])\s*```", raw, flags=re.S)
+        if fenced:
+            raw = fenced.group(1)
+
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, list) else None
+        except json.JSONDecodeError:
+            match = re.search(r"\[.*\]", raw, flags=re.S)
+            if not match:
+                return None
+            try:
+                data = json.loads(match.group(0))
+                return data if isinstance(data, list) else None
+            except json.JSONDecodeError:
+                return None
 
     def _fallback(self, seed: GameSnapshot, candidates: list[CandidateGame], top_k: int) -> list[RecommendationItem]:
         output = []

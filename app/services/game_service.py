@@ -314,13 +314,6 @@ class GameService:
         candidate_pool: dict[int, GameSnapshot] = {}
         if similar_appid_set and prioritized:
             candidate_pool.update(prioritized)
-            if len(candidate_pool) < max(3, top_k):
-                for item in raw_candidates:
-                    if item.appid == seed.appid or item.appid in candidate_pool:
-                        continue
-                    candidate_pool[item.appid] = item
-                    if len(candidate_pool) >= max(20, top_k * 4):
-                        break
         else:
             for item in raw_candidates:
                 if item.appid == seed.appid:

@@ -38,13 +38,33 @@ class FakeSteamClient:
                 "currency": currency,
                 "popularity_rank": 3,
             },
+            {
+                "appid": 300,
+                "name": "Battlefield 1",
+                "original_price": 19800,
+                "final_price": 990,
+                "discount_percent": 95,
+                "currency": currency,
+                "popularity_rank": 4,
+            },
+            {
+                "appid": 301,
+                "name": "Party Animals",
+                "original_price": 9800,
+                "final_price": 6860,
+                "discount_percent": 30,
+                "currency": currency,
+                "popularity_rank": 5,
+            },
         ]
 
     def get_app_details(self, appid: int, region: str = "cn"):
         mapping = {
-            100: {"name": "黑神话：悟空", "genres": ["动作"], "tags": ["动作", "类魂"], "currency": "CNY", "original_price": 29800, "final_price": 23840, "discount_percent": 20, "aliases": ["黑神话"]},
+            100: {"name": "黑神话：悟空", "genres": ["动作"], "tags": ["动作", "类魂", "单人"], "currency": "CNY", "original_price": 29800, "final_price": 23840, "discount_percent": 20, "aliases": ["黑神话"]},
             101: {"name": "黑神话：悟空 Demo", "genres": ["动作"], "tags": ["动作"], "currency": "CNY", "original_price": 9800, "final_price": 4900, "discount_percent": 50, "aliases": ["黑神话 demo"]},
             200: {"name": "卧龙", "genres": ["动作", "角色扮演"], "tags": ["动作", "硬核"], "currency": "CNY", "original_price": 29900, "final_price": 14950, "discount_percent": 50, "aliases": ["卧龙苍天陨落"]},
+            300: {"name": "Battlefield 1", "genres": ["动作", "射击"], "tags": ["动作", "FPS", "多人", "在线合作"], "currency": "CNY", "original_price": 19800, "final_price": 990, "discount_percent": 95, "aliases": ["战地1"]},
+            301: {"name": "Party Animals", "genres": ["动作", "休闲"], "tags": ["派对", "多人", "联机"], "currency": "CNY", "original_price": 9800, "final_price": 6860, "discount_percent": 30, "aliases": ["动物派对"]},
         }
         return {"appid": appid, **mapping[appid]}
 
@@ -53,6 +73,8 @@ class FakeSteamClient:
             100: {"recent_summary": "特别好评", "recent_percent": 88, "recent_total": 500, "overall_summary": "特别好评", "overall_percent": 90, "overall_total": 5000},
             101: {"recent_summary": "褒贬不一", "recent_percent": 65, "recent_total": 90, "overall_summary": "多半好评", "overall_percent": 72, "overall_total": 800},
             200: {"recent_summary": "特别好评", "recent_percent": 91, "recent_total": 200, "overall_summary": "特别好评", "overall_percent": 89, "overall_total": 2600},
+            300: {"recent_summary": "特别好评", "recent_percent": 88, "recent_total": 320, "overall_summary": "特别好评", "overall_percent": 85, "overall_total": 6800},
+            301: {"recent_summary": "特别好评", "recent_percent": 91, "recent_total": 180, "overall_summary": "特别好评", "overall_percent": 90, "overall_total": 4700},
         }
         return mapping[appid]
 
@@ -155,6 +177,9 @@ def test_recommend_similar_discounted(settings: Settings, memory_cache, session_
     rows = service.recommend_similar_discounted("黑神话：悟空", top_k=3)
     assert rows
     assert rows[0]["appid"] == 200
+    appids = {item["appid"] for item in rows}
+    assert 300 not in appids
+    assert 301 not in appids
 
 
 def test_recommend_similar_with_ambiguous_seed(settings: Settings, memory_cache, session_factory):

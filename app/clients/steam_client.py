@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+from bs4 import BeautifulSoup
 
 from app.config import Settings
 from app.exceptions import DataSourceUnavailable
@@ -79,13 +80,15 @@ class SteamClient:
 
         genres = [item.get("description") for item in data.get("genres", []) if item.get("description")]
         categories = [item.get("description") for item in data.get("categories", []) if item.get("description")]
+        store_tags = self._fetch_store_tags(appid=appid, region=region)
+        all_tags = self._unique_text(genres + categories + store_tags)
 
         price_overview = data.get("price_overview") or {}
         return {
             "appid": appid,
             "name": data.get("name") or str(appid),
             "genres": genres,
-            "tags": categories,
+            "tags": all_tags,
             "currency": price_overview.get("currency") or "CNY",
             "original_price": price_overview.get("initial"),
             "final_price": price_overview.get("final"),
@@ -119,6 +122,44 @@ class SteamClient:
 
         query_summary = (resp.json() or {}).get("query_summary") or {}
         return query_summary
+
+    def _fetch_store_tags(self, appid: int, region: str = "cn") -> list[str]:
+        # Steam Web API does not expose community tags directly; fetch public store page tags as supplement.
+        url = f"{self.settings.steam_base_url}/app/{appid}"
+        params = {"cc": region, "l": self.settings.steam_lang}
+        cookies = {
+            "birthtime": "0",
+            "lastagecheckage": "1-0-1980",
+            "wants_mature_content": "1",
+        }
+        try:
+            resp = self.client.get(url, params=params, cookies=cookies, follow_redirects=True)
+            if resp.status_code >= 400:
+                return []
+            soup = BeautifulSoup(resp.text, "html.parser")
+            tags = []
+            for node in soup.select("a.app_tag"):
+                value = node.get_text(" ", strip=True)
+                if value:
+                    tags.append(value)
+            return self._unique_text(tags)
+        except Exception:  # noqa: BLE001
+            return []
+
+    @staticmethod
+    def _unique_text(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        output: list[str] = []
+        for value in values:
+            normalized = value.strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append(normalized)
+        return output
 
     @staticmethod
     def _calc_percent(query_summary: dict[str, Any]) -> int | None:

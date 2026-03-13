@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime
@@ -19,6 +20,49 @@ logger = logging.getLogger(__name__)
 
 
 class GameService:
+    _NON_GAMEPLAY_TAG_KEYWORDS = {
+        "steam achievements",
+        "steam trading cards",
+        "steam cloud",
+        "steam deck",
+        "full controller support",
+        "partial controller support",
+        "remote play",
+        "remote play together",
+        "family sharing",
+        "stats",
+        "captions available",
+        "includes level editor",
+        "workshop",
+        "commentary available",
+        "in-app purchases",
+        "profile features limited",
+        "points shop items available",
+        "steam 集换式卡牌",
+        "steam 云",
+        "远程同乐",
+        "支持控制器",
+        "完全支持控制器",
+        "部分支持控制器",
+        "家庭共享",
+        "创意工坊",
+        "可用字幕",
+        "统计数据",
+        "点数商店物品",
+        "应用内购买",
+        "steam 成就",
+    }
+    _SHOOTER_KEYWORDS = {"fps", "射击", "shooter", "战地", "counter-strike", "cs2", "枪战", "tactical shooter"}
+    _MULTIPLAYER_KEYWORDS = {"multi-player", "multiplayer", "online co-op", "co-op", "pvp", "在线合作", "多人", "联机"}
+    _SINGLE_PLAYER_KEYWORDS = {"single-player", "single player", "单人"}
+    _CONCEPT_KEYWORDS = {
+        "soulslike": {"souls-like", "soulslike", "类魂", "魂类", "魂系"},
+        "melee_action": {"action", "动作", "hack and slash", "hack & slash", "character action", "近战", "武术", "格斗"},
+        "boss_challenge": {"boss", "首领", "高难度", "困难", "parry", "格挡", "dodge", "闪避"},
+        "action_rpg": {"action rpg", "arpg", "角色扮演", "rpg", "动作角色扮演"},
+        "action_adventure": {"adventure", "冒险", "剧情", "story rich"},
+    }
+
     def __init__(
         self,
         settings: Settings,
@@ -219,20 +263,63 @@ class GameService:
             raw_candidates = repo.list_discounted_candidates(exclude_appid=seed.appid, max_count=120)
 
         filtered = []
-        seed_genres = set(seed.genres)
+        seed_genres = self._normalize_terms(seed.genres)
+        seed_tags = self._strip_non_gameplay_tags(self._normalize_terms(seed.tags))
+        seed_concepts = self._extract_gameplay_concepts(seed.name, seed_genres, seed_tags)
+        seed_is_shooter = self._is_shooter(seed.name, seed_genres, seed_tags)
+        seed_prefers_single = self._prefers_single_player(seed_tags)
+        min_overlap = self._required_genre_overlap(seed_genres)
         for item in raw_candidates:
             if (item.steam_review.overall_percent or 0) < self.settings.min_recommend_review_percent:
                 continue
-            overlap = seed_genres.intersection(set(item.genres))
-            genre_score = (len(overlap) / len(seed_genres)) if seed_genres else 0
+            cand_genres = self._normalize_terms(item.genres)
+            cand_tags = self._strip_non_gameplay_tags(self._normalize_terms(item.tags))
+            overlap = seed_genres.intersection(cand_genres)
+            overlap_count = len(overlap)
+            if overlap_count < min_overlap:
+                continue
+
+            genre_score = (overlap_count / len(seed_genres)) if seed_genres else 0
+            tag_overlap = len(seed_tags.intersection(cand_tags))
+            tag_score = (tag_overlap / len(seed_tags)) if seed_tags else 0
+            cand_concepts = self._extract_gameplay_concepts(item.name, cand_genres, cand_tags)
+            concept_overlap = len(seed_concepts.intersection(cand_concepts))
+            concept_score = (concept_overlap / len(seed_concepts)) if seed_concepts else 0
+
+            # If seed has a clear gameplay concept (e.g. soulslike), reject concept-mismatch candidates.
+            if seed_concepts and concept_overlap == 0:
+                continue
+
             discount_score = min(1.0, (item.steam_price.discount_percent or 0) / 80)
             review_score = ((item.steam_review.overall_percent or 0) / 100) * 0.6
-            score = genre_score * 0.55 + discount_score * 0.25 + review_score * 0.20
+            if seed_concepts:
+                score = (
+                    concept_score * 0.40
+                    + genre_score * 0.25
+                    + tag_score * 0.20
+                    + discount_score * 0.075
+                    + review_score * 0.075
+                )
+            else:
+                score = genre_score * 0.45 + tag_score * 0.22 + discount_score * 0.165 + review_score * 0.165
+
+            # Penalize mismatch in play style: seed like 黑神话 should avoid party/FPS-heavy results.
+            if seed_prefers_single and self._is_multiplayer_focused(cand_tags):
+                score -= 0.25
+            if not seed_is_shooter and self._is_shooter(item.name, cand_genres, cand_tags):
+                score -= 0.20
+            if "soulslike" in seed_concepts and "soulslike" not in cand_concepts:
+                score -= 0.20
+
+            if score < 0.22:
+                continue
+
             filtered.append(
                 CandidateGame(
                     appid=item.appid,
                     name=item.name,
                     genres=item.genres,
+                    tags=item.tags,
                     steam_price=item.steam_price,
                     steam_review=item.steam_review,
                     score=score,
@@ -253,6 +340,68 @@ class GameService:
             }
             for item in reranked
         ]
+
+    @staticmethod
+    def _normalize_terms(values: list[str] | None) -> set[str]:
+        if not values:
+            return set()
+        output: set[str] = set()
+        for value in values:
+            normalized = value.strip().lower()
+            if not normalized:
+                continue
+            # Keep only meaningful terms.
+            normalized = re.sub(r"\s+", " ", normalized)
+            output.add(normalized)
+        return output
+
+    @staticmethod
+    def _required_genre_overlap(seed_genres: set[str]) -> int:
+        # Stronger similarity gate for broad-genre seeds (e.g. action/adventure/rpg).
+        if len(seed_genres) >= 3:
+            return 2
+        if len(seed_genres) >= 2:
+            return 1
+        return 1 if seed_genres else 0
+
+    @staticmethod
+    def _is_multiplayer_focused(tags: set[str]) -> bool:
+        words = GameService._MULTIPLAYER_KEYWORDS
+        # If explicit single-player exists alongside multiplayer, do not over-penalize.
+        has_multi = any(word in " ".join(tags) for word in words)
+        has_single = any(word in " ".join(tags) for word in GameService._SINGLE_PLAYER_KEYWORDS)
+        return has_multi and not has_single
+
+    @staticmethod
+    def _prefers_single_player(tags: set[str]) -> bool:
+        text = " ".join(tags)
+        has_single = any(word in text for word in GameService._SINGLE_PLAYER_KEYWORDS)
+        has_multi = any(word in text for word in GameService._MULTIPLAYER_KEYWORDS)
+        return has_single and not has_multi
+
+    @staticmethod
+    def _is_shooter(name: str, genres: set[str], tags: set[str]) -> bool:
+        text = f"{name.lower()} {' '.join(genres)} {' '.join(tags)}"
+        return any(word in text for word in GameService._SHOOTER_KEYWORDS)
+
+    @staticmethod
+    def _strip_non_gameplay_tags(tags: set[str]) -> set[str]:
+        if not tags:
+            return set()
+        return {
+            tag
+            for tag in tags
+            if not any(noise in tag for noise in GameService._NON_GAMEPLAY_TAG_KEYWORDS)
+        }
+
+    @staticmethod
+    def _extract_gameplay_concepts(name: str, genres: set[str], tags: set[str]) -> set[str]:
+        text = f"{name.lower()} {' '.join(genres)} {' '.join(tags)}"
+        concepts: set[str] = set()
+        for concept, keywords in GameService._CONCEPT_KEYWORDS.items():
+            if any(keyword in text for keyword in keywords):
+                concepts.add(concept)
+        return concepts
 
     def _get_snapshot_or_refresh(self, appid: int) -> GameSnapshot | None:
         with self.session_factory() as session:

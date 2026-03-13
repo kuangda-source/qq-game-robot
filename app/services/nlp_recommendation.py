@@ -41,6 +41,7 @@ class LLMReranker:
                         "appid": c.appid,
                         "name": c.name,
                         "genres": c.genres,
+                        "tags": c.tags,
                         "discount_percent": c.steam_price.discount_percent,
                         "final_price": c.steam_price.final_price,
                         "review_percent": c.steam_review.overall_percent,
@@ -85,7 +86,14 @@ class LLMReranker:
             return fallback
 
     def _request_rerank_json(self, prompt_payload: dict) -> list[dict] | None:
-        system_prompt = "你是游戏推荐重排器。严格输出JSON数组，每项包含appid, reason, score(0-1)。不要输出任何额外文本。"
+        system_prompt = (
+            "你是游戏推荐重排器。目标是“玩法相似度优先，折扣和评价次要”。"
+            "请严格遵守："
+            "1) 优先保留核心玩法一致（战斗节奏、视角、单/多人、题材与关卡结构）。"
+            "2) 如果种子游戏是单机动作/类魂，不要把多人派对/FPS排到前列。"
+            "3) 仅使用输入候选，不要虚构新游戏。"
+            "4) 严格输出JSON数组，每项包含appid, reason, score(0-1)，不要输出任何额外文本。"
+        )
         user_prompt = json.dumps(prompt_payload, ensure_ascii=False)
 
         # First try Responses API. Some OpenAI-compatible providers do not support it.

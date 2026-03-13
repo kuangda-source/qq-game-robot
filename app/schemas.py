@@ -51,6 +51,7 @@ class CandidateGame(BaseModel):
     appid: int
     name: str
     genres: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     steam_price: PriceInfo
     steam_review: ReviewInfo
     score: float = 0.0

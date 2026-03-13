@@ -310,11 +310,22 @@ class GameService:
         with self.session_factory() as session:
             repo = GameRepository(session)
             raw_candidates = repo.list_discounted_candidates(exclude_appid=seed.appid, max_count=120)
-        for item in raw_candidates:
-            if item.appid == seed.appid:
-                continue
-            if item.appid not in prioritized:
-                prioritized[item.appid] = item
+
+        candidate_pool: dict[int, GameSnapshot] = {}
+        if similar_appid_set and prioritized:
+            candidate_pool.update(prioritized)
+            if len(candidate_pool) < max(3, top_k):
+                for item in raw_candidates:
+                    if item.appid == seed.appid or item.appid in candidate_pool:
+                        continue
+                    candidate_pool[item.appid] = item
+                    if len(candidate_pool) >= max(20, top_k * 4):
+                        break
+        else:
+            for item in raw_candidates:
+                if item.appid == seed.appid:
+                    continue
+                candidate_pool[item.appid] = item
 
         filtered = []
         seed_genres = self._normalize_terms(seed.genres)
@@ -323,7 +334,7 @@ class GameService:
         seed_is_shooter = self._is_shooter(seed.name, seed_genres, seed_tags)
         seed_prefers_single = self._prefers_single_player(seed_tags)
         min_overlap = self._required_genre_overlap(seed_genres)
-        for item in prioritized.values():
+        for item in candidate_pool.values():
             review_percent = item.steam_review.overall_percent
             is_prioritized = item.appid in similar_appid_set
             if review_percent is not None and review_percent < self.settings.min_recommend_review_percent and not is_prioritized:
@@ -344,6 +355,11 @@ class GameService:
             concept_overlap = len(seed_concepts.intersection(cand_concepts))
             concept_score = (concept_overlap / len(seed_concepts)) if seed_concepts else 0
 
+            if similar_appid_set and not is_prioritized:
+                if seed_concepts and concept_overlap == 0:
+                    continue
+                if not seed_concepts and tag_overlap == 0 and overlap_count == 0:
+                    continue
             # If seed has a clear gameplay concept (e.g. soulslike), reject concept-mismatch candidates.
             if seed_concepts and concept_overlap == 0 and not is_prioritized:
                 continue

@@ -80,6 +80,14 @@ class LLMReranker:
                 )
                 if len(reranked) >= top_k:
                     break
+            if reranked and len(reranked) < top_k:
+                used = {item.appid for item in reranked}
+                for item in fallback:
+                    if item.appid in used:
+                        continue
+                    reranked.append(item)
+                    if len(reranked) >= top_k:
+                        break
             return reranked or fallback
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLM rerank failed, fallback to rule ranking: %s", exc)

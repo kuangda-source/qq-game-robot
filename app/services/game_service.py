@@ -314,7 +314,13 @@ class GameService:
             prioritized[snapshot.appid] = snapshot
 
         if similar_appid_set and len(prioritized) < top_k:
-            self._seed_recommendation_candidates(seed=seed, seed_concepts=seed_concepts, max_count=max(top_k * 3, 12))
+            self._seed_recommendation_candidates(
+                seed=seed,
+                seed_genres=seed_genres,
+                seed_tags=seed_tags,
+                seed_concepts=seed_concepts,
+                max_count=max(top_k * 3, 12),
+            )
 
         with self.session_factory() as session:
             repo = GameRepository(session)
@@ -476,6 +482,38 @@ class GameService:
                 if len(filtered) >= max(top_k * 2, top_k + 2):
                     break
 
+        if len(filtered) < top_k:
+            existing = {item.appid for item in filtered}
+            for item in raw_candidates:
+                if item.appid in existing or item.appid == seed.appid:
+                    continue
+                review_percent = item.steam_review.overall_percent or 0
+                if review_percent < 65:
+                    continue
+
+                cand_genres = self._normalize_terms(item.genres)
+                cand_tags = self._strip_non_gameplay_tags(self._normalize_terms(item.tags))
+                if seed_prefers_single and self._is_multiplayer_focused(cand_tags):
+                    continue
+                if not seed_is_shooter and self._is_shooter(item.name, cand_genres, cand_tags):
+                    continue
+
+                score = min(1.0, (item.steam_price.discount_percent or 0) / 80) * 0.55 + (review_percent / 100) * 0.45
+                filtered.append(
+                    CandidateGame(
+                        appid=item.appid,
+                        name=item.name,
+                        genres=item.genres,
+                        tags=item.tags,
+                        steam_price=item.steam_price,
+                        steam_review=item.steam_review,
+                        score=score,
+                    )
+                )
+                existing.add(item.appid)
+                if len(filtered) >= top_k:
+                    break
+
         reranked = self.reranker.rerank(seed=seed, candidates=filtered, top_k=top_k)
         return [
             {
@@ -523,21 +561,35 @@ class GameService:
 
         return score
 
-    def _seed_recommendation_candidates(self, seed: GameSnapshot, seed_concepts: set[str], max_count: int = 12) -> int:
+    def _seed_recommendation_candidates(
+        self,
+        seed: GameSnapshot,
+        seed_genres: set[str],
+        seed_tags: set[str],
+        seed_concepts: set[str],
+        max_count: int = 12,
+    ) -> int:
         queries: list[str] = []
-        for value in [seed.name, *(seed.tags or []), *(seed.genres or [])]:
+        for value in [seed.name]:
             text = (value or "").strip()
             if not text:
                 continue
             if text not in queries:
                 queries.append(text)
-            if len(queries) >= 5:
-                break
 
         if "soulslike" in seed_concepts:
-            for concept_term in ["类魂", "Soulslike"]:
+            for concept_term in ["类魂", "Soulslike", "动作角色扮演"]:
                 if concept_term not in queries:
                     queries.insert(0, concept_term)
+
+        for value in list(seed_tags)[:4] + list(seed_genres)[:3]:
+            text = (value or "").strip()
+            if len(text) < 2:
+                continue
+            if text not in queries:
+                queries.append(text)
+            if len(queries) >= 8:
+                break
 
         seen: set[int] = set()
         updated = 0

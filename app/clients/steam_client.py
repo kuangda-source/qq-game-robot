@@ -15,7 +15,10 @@ from app.exceptions import DataSourceUnavailable
 class SteamClient:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.client = httpx.Client(timeout=settings.request_timeout_seconds)
+        kwargs: dict[str, Any] = {"timeout": settings.request_timeout_seconds}
+        if settings.steam_proxy_url:
+            kwargs["proxy"] = settings.steam_proxy_url
+        self.client = httpx.Client(**kwargs)
 
     def get_top_seller_discounts(self, limit: int, region: str = "cn", currency: str = "CNY") -> list[dict[str, Any]]:
         url = f"{self.settings.steam_base_url}/api/featuredcategories"

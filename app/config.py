@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     steam_base_url: str = "https://store.steampowered.com"
     steam_cc: str = "cn"
     steam_lang: str = "schinese"
+    steam_proxy_url: str | None = None
 
     xhh_game_url_template: str = "https://www.xiaoheihe.cn/app/steam/{appid}"
     xhh_timeout_seconds: int = 10

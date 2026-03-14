@@ -56,6 +56,42 @@ class FakeSteamClient:
                 "currency": currency,
                 "popularity_rank": 5,
             },
+            {
+                "appid": 210,
+                "name": "艾尔登法环",
+                "original_price": 29800,
+                "final_price": 17880,
+                "discount_percent": 40,
+                "currency": currency,
+                "popularity_rank": 6,
+            },
+            {
+                "appid": 211,
+                "name": "只狼：影逝二度",
+                "original_price": 26800,
+                "final_price": 18760,
+                "discount_percent": 30,
+                "currency": currency,
+                "popularity_rank": 7,
+            },
+            {
+                "appid": 212,
+                "name": "仁王2",
+                "original_price": 24900,
+                "final_price": 14940,
+                "discount_percent": 40,
+                "currency": currency,
+                "popularity_rank": 8,
+            },
+            {
+                "appid": 213,
+                "name": "P的谎言",
+                "original_price": 26800,
+                "final_price": 17420,
+                "discount_percent": 35,
+                "currency": currency,
+                "popularity_rank": 9,
+            },
         ]
 
     def get_app_details(self, appid: int, region: str = "cn"):
@@ -65,6 +101,10 @@ class FakeSteamClient:
             200: {"name": "卧龙", "genres": ["动作", "角色扮演"], "tags": ["动作", "硬核"], "currency": "CNY", "original_price": 29900, "final_price": 14950, "discount_percent": 50, "aliases": ["卧龙苍天陨落"]},
             300: {"name": "Battlefield 1", "genres": ["动作", "射击"], "tags": ["动作", "FPS", "多人", "在线合作"], "currency": "CNY", "original_price": 19800, "final_price": 990, "discount_percent": 95, "aliases": ["战地1"]},
             301: {"name": "Party Animals", "genres": ["动作", "休闲"], "tags": ["派对", "多人", "联机"], "currency": "CNY", "original_price": 9800, "final_price": 6860, "discount_percent": 30, "aliases": ["动物派对"]},
+            210: {"name": "艾尔登法环", "genres": ["动作", "角色扮演"], "tags": ["动作", "类魂", "单人", "开放世界"], "currency": "CNY", "original_price": 29800, "final_price": 17880, "discount_percent": 40, "aliases": ["Elden Ring"]},
+            211: {"name": "只狼：影逝二度", "genres": ["动作", "冒险"], "tags": ["动作", "类魂", "单人", "困难"], "currency": "CNY", "original_price": 26800, "final_price": 18760, "discount_percent": 30, "aliases": ["Sekiro"]},
+            212: {"name": "仁王2", "genres": ["动作", "角色扮演"], "tags": ["动作", "类魂", "单人", "武术"], "currency": "CNY", "original_price": 24900, "final_price": 14940, "discount_percent": 40, "aliases": ["Nioh 2"]},
+            213: {"name": "P的谎言", "genres": ["动作", "角色扮演"], "tags": ["动作", "类魂", "单人", "黑暗奇幻"], "currency": "CNY", "original_price": 26800, "final_price": 17420, "discount_percent": 35, "aliases": ["Lies of P"]},
         }
         return {"appid": appid, **mapping[appid]}
 
@@ -75,6 +115,10 @@ class FakeSteamClient:
             200: {"recent_summary": "特别好评", "recent_percent": 91, "recent_total": 200, "overall_summary": "特别好评", "overall_percent": 89, "overall_total": 2600},
             300: {"recent_summary": "特别好评", "recent_percent": 88, "recent_total": 320, "overall_summary": "特别好评", "overall_percent": 85, "overall_total": 6800},
             301: {"recent_summary": "特别好评", "recent_percent": 91, "recent_total": 180, "overall_summary": "特别好评", "overall_percent": 90, "overall_total": 4700},
+            210: {"recent_summary": "特别好评", "recent_percent": 94, "recent_total": 650, "overall_summary": "特别好评", "overall_percent": 93, "overall_total": 120000},
+            211: {"recent_summary": "特别好评", "recent_percent": 96, "recent_total": 420, "overall_summary": "特别好评", "overall_percent": 95, "overall_total": 180000},
+            212: {"recent_summary": "特别好评", "recent_percent": 90, "recent_total": 300, "overall_summary": "特别好评", "overall_percent": 88, "overall_total": 76000},
+            213: {"recent_summary": "特别好评", "recent_percent": 92, "recent_total": 280, "overall_summary": "特别好评", "overall_percent": 89, "overall_total": 43000},
         }
         return mapping[appid]
 
@@ -184,10 +228,11 @@ def test_query_ambiguous_then_resolve(settings: Settings, memory_cache, session_
 def test_recommend_similar_discounted(settings: Settings, memory_cache, session_factory):
     service = build_service(settings, memory_cache, session_factory)
     service.refresh_market_data(limit=10)
-    rows = service.recommend_similar_discounted("黑神话：悟空", top_k=3)
+    rows = service.recommend_similar_discounted("黑神话：悟空", top_k=5)
     assert rows
-    assert rows[0]["appid"] == 200
+    assert len(rows) == 5
     appids = {item["appid"] for item in rows}
+    assert 200 in appids
     assert 300 not in appids
     assert 301 not in appids
 
@@ -197,7 +242,10 @@ def test_recommend_similar_with_ambiguous_seed(settings: Settings, memory_cache,
     service.refresh_market_data(limit=10)
     rows = service.recommend_similar_discounted("黑神话", top_k=3)
     assert rows
-    assert rows[0]["appid"] == 200
+    appids = {item["appid"] for item in rows}
+    assert len(rows) == 3
+    assert 300 not in appids
+    assert 301 not in appids
 
 
 def test_xhh_degrade_message(settings: Settings, memory_cache, session_factory):

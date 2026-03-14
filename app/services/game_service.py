@@ -296,6 +296,12 @@ class GameService:
             raise DataSourceUnavailable(seed_result.message or "seed game unavailable")
 
         seed = seed_result.game
+        seed_genres = self._normalize_terms(seed.genres)
+        seed_tags = self._strip_non_gameplay_tags(self._normalize_terms(seed.tags))
+        seed_concepts = self._extract_gameplay_concepts(seed.name, seed_genres, seed_tags)
+        seed_is_shooter = self._is_shooter(seed.name, seed_genres, seed_tags)
+        seed_prefers_single = self._prefers_single_player(seed_tags)
+
         similar_appids = self.steam_client.get_similar_appids(appid=seed.appid, region=self.settings.steam_cc, limit=40)
         similar_appid_set = set(similar_appids)
         prioritized: dict[int, GameSnapshot] = {}
@@ -312,8 +318,29 @@ class GameService:
             raw_candidates = repo.list_discounted_candidates(exclude_appid=seed.appid, max_count=120)
 
         candidate_pool: dict[int, GameSnapshot] = {}
+        supplemental_appids: set[int] = set()
         if similar_appid_set and prioritized:
             candidate_pool.update(prioritized)
+            # Keep Steam similar products as first-class source, but backfill to top_k
+            # with gameplay-compatible discounted titles when the similar pool is too small.
+            if len(candidate_pool) < top_k:
+                for item in raw_candidates:
+                    if item.appid == seed.appid or item.appid in candidate_pool:
+                        continue
+                    quick_score = self._coarse_similarity_score(
+                        seed_genres=seed_genres,
+                        seed_tags=seed_tags,
+                        seed_concepts=seed_concepts,
+                        seed_prefers_single=seed_prefers_single,
+                        seed_is_shooter=seed_is_shooter,
+                        candidate=item,
+                    )
+                    if quick_score < 0.30:
+                        continue
+                    candidate_pool[item.appid] = item
+                    supplemental_appids.add(item.appid)
+                    if len(candidate_pool) >= max(top_k * 4, top_k + 6):
+                        break
         else:
             for item in raw_candidates:
                 if item.appid == seed.appid:
@@ -321,11 +348,6 @@ class GameService:
                 candidate_pool[item.appid] = item
 
         filtered = []
-        seed_genres = self._normalize_terms(seed.genres)
-        seed_tags = self._strip_non_gameplay_tags(self._normalize_terms(seed.tags))
-        seed_concepts = self._extract_gameplay_concepts(seed.name, seed_genres, seed_tags)
-        seed_is_shooter = self._is_shooter(seed.name, seed_genres, seed_tags)
-        seed_prefers_single = self._prefers_single_player(seed_tags)
         min_overlap = self._required_genre_overlap(seed_genres)
         for item in candidate_pool.values():
             review_percent = item.steam_review.overall_percent
@@ -350,12 +372,16 @@ class GameService:
 
             if similar_appid_set and not is_prioritized:
                 if seed_concepts and concept_overlap == 0:
-                    continue
+                    if tag_overlap == 0:
+                        continue
                 if not seed_concepts and tag_overlap == 0 and overlap_count == 0:
                     continue
-            # If seed has a clear gameplay concept (e.g. soulslike), reject concept-mismatch candidates.
-            if seed_concepts and concept_overlap == 0 and not is_prioritized:
-                continue
+            if similar_appid_set and item.appid in supplemental_appids:
+                # Backfilled candidates must pass stricter playstyle checks.
+                if seed_prefers_single and self._is_multiplayer_focused(cand_tags):
+                    continue
+                if not seed_is_shooter and self._is_shooter(item.name, cand_genres, cand_tags):
+                    continue
 
             discount_score = min(1.0, (item.steam_price.discount_percent or 0) / 80)
             review_score = ((review_percent or 0) / 100) * 0.6
@@ -380,7 +406,10 @@ class GameService:
             if is_prioritized:
                 score += 0.18
 
-            if score < 0.22 and not is_prioritized:
+            min_score = 0.22
+            if similar_appid_set and len(candidate_pool) < max(top_k * 2, 8):
+                min_score = 0.16
+            if score < min_score and not is_prioritized:
                 continue
 
             filtered.append(
@@ -409,6 +438,38 @@ class GameService:
             }
             for item in reranked
         ]
+
+    def _coarse_similarity_score(
+        self,
+        seed_genres: set[str],
+        seed_tags: set[str],
+        seed_concepts: set[str],
+        seed_prefers_single: bool,
+        seed_is_shooter: bool,
+        candidate: GameSnapshot,
+    ) -> float:
+        cand_genres = self._normalize_terms(candidate.genres)
+        cand_tags = self._strip_non_gameplay_tags(self._normalize_terms(candidate.tags))
+        cand_concepts = self._extract_gameplay_concepts(candidate.name, cand_genres, cand_tags)
+
+        genre_overlap = len(seed_genres.intersection(cand_genres))
+        tag_overlap = len(seed_tags.intersection(cand_tags))
+        concept_overlap = len(seed_concepts.intersection(cand_concepts))
+
+        score = 0.0
+        score += min(genre_overlap, 3) * 0.15
+        score += min(tag_overlap, 4) * 0.10
+        if concept_overlap > 0:
+            score += 0.45
+
+        if seed_prefers_single and self._is_multiplayer_focused(cand_tags):
+            score -= 0.35
+        if not seed_is_shooter and self._is_shooter(candidate.name, cand_genres, cand_tags):
+            score -= 0.30
+        if seed_concepts and concept_overlap == 0 and tag_overlap == 0:
+            score -= 0.25
+
+        return score
 
     @staticmethod
     def _normalize_terms(values: list[str] | None) -> set[str]:

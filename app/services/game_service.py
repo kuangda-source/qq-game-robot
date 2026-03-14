@@ -313,6 +313,9 @@ class GameService:
                 continue
             prioritized[snapshot.appid] = snapshot
 
+        if similar_appid_set and len(prioritized) < top_k:
+            self._seed_recommendation_candidates(seed=seed, seed_concepts=seed_concepts, max_count=max(top_k * 3, 12))
+
         with self.session_factory() as session:
             repo = GameRepository(session)
             raw_candidates = repo.list_discounted_candidates(exclude_appid=seed.appid, max_count=120)
@@ -424,6 +427,55 @@ class GameService:
                 )
             )
 
+        if len(filtered) < top_k:
+            existing = {item.appid for item in filtered}
+            for item in raw_candidates:
+                if item.appid in existing or item.appid == seed.appid:
+                    continue
+                review_percent = item.steam_review.overall_percent
+                if review_percent is None or review_percent < self.settings.min_recommend_review_percent:
+                    continue
+
+                cand_genres = self._normalize_terms(item.genres)
+                cand_tags = self._strip_non_gameplay_tags(self._normalize_terms(item.tags))
+                if seed_prefers_single and self._is_multiplayer_focused(cand_tags):
+                    continue
+                if not seed_is_shooter and self._is_shooter(item.name, cand_genres, cand_tags):
+                    continue
+
+                overlap_count = len(seed_genres.intersection(cand_genres))
+                tag_overlap = len(seed_tags.intersection(cand_tags))
+                cand_concepts = self._extract_gameplay_concepts(item.name, cand_genres, cand_tags)
+                concept_overlap = len(seed_concepts.intersection(cand_concepts))
+
+                if seed_concepts:
+                    if concept_overlap == 0 and tag_overlap < 2:
+                        continue
+                elif tag_overlap == 0 and overlap_count == 0:
+                    continue
+
+                score = (
+                    min(1.0, concept_overlap / max(1, len(seed_concepts))) * 0.35
+                    + min(1.0, tag_overlap / max(1, len(seed_tags))) * 0.30
+                    + min(1.0, overlap_count / max(1, len(seed_genres))) * 0.20
+                    + min(1.0, (item.steam_price.discount_percent or 0) / 80) * 0.075
+                    + ((review_percent or 0) / 100) * 0.075
+                )
+                filtered.append(
+                    CandidateGame(
+                        appid=item.appid,
+                        name=item.name,
+                        genres=item.genres,
+                        tags=item.tags,
+                        steam_price=item.steam_price,
+                        steam_review=item.steam_review,
+                        score=score,
+                    )
+                )
+                existing.add(item.appid)
+                if len(filtered) >= max(top_k * 2, top_k + 2):
+                    break
+
         reranked = self.reranker.rerank(seed=seed, candidates=filtered, top_k=top_k)
         return [
             {
@@ -470,6 +522,44 @@ class GameService:
             score -= 0.25
 
         return score
+
+    def _seed_recommendation_candidates(self, seed: GameSnapshot, seed_concepts: set[str], max_count: int = 12) -> int:
+        queries: list[str] = []
+        for value in [seed.name, *(seed.tags or []), *(seed.genres or [])]:
+            text = (value or "").strip()
+            if not text:
+                continue
+            if text not in queries:
+                queries.append(text)
+            if len(queries) >= 5:
+                break
+
+        if "soulslike" in seed_concepts:
+            for concept_term in ["类魂", "Soulslike"]:
+                if concept_term not in queries:
+                    queries.insert(0, concept_term)
+
+        seen: set[int] = set()
+        updated = 0
+        for query in queries[:6]:
+            try:
+                rows = self.steam_client.search_apps(keyword=query, limit=12, region=self.settings.steam_cc)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Recommendation seed search failed for '%s': %s", query, exc)
+                continue
+            for row in rows:
+                appid = int(row["appid"])
+                if appid == seed.appid or appid in seen:
+                    continue
+                seen.add(appid)
+                try:
+                    self._refresh_single_app(appid=appid)
+                    updated += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.info("Recommendation seed refresh failed for %s: %s", appid, exc)
+                if updated >= max_count:
+                    return updated
+        return updated
 
     @staticmethod
     def _normalize_terms(values: list[str] | None) -> set[str]:
